@@ -15,6 +15,7 @@ from models.base import Base  # noqa: E402
 import models.canonical  # noqa: E402, F401
 import models.auth  # noqa: E402, F401
 import models.raw_events  # noqa: E402, F401
+import models.marts  # noqa: E402, F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

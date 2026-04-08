@@ -1,3 +1,11 @@
+"""
+SQLAlchemy ORM base class and shared column mixins.
+
+All domain models inherit from `Base`.  Optional mixins (`UUIDPKMixin`,
+`TimestampMixin`) provide standard columns; mart models intentionally do NOT
+use them because their PK shapes differ from the canonical domain tables.
+"""
+
 import uuid
 from datetime import datetime
 
@@ -7,7 +15,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    pass
+    """Shared declarative base for all SQLAlchemy ORM models in this project."""
 
 
 class UUIDPKMixin:

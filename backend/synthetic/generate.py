@@ -89,11 +89,138 @@ _STAFFING_SOURCES = ["internal", "rotational", "external"]
 _PROJECT_TYPES = ["product", "research", "platform", "tooling", "experiment"]
 _PRIORITY_TIERS = ["p0", "p1", "p2", "p3"]
 
+# (title, job_level) pairs by role_family — ensures coherent combinations.
+# Picked jointly so level always matches title seniority.
+_ROLE_TITLE_LEVELS_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
+    "engineering": [
+        ("Software Engineer",            "L3"),
+        ("Software Engineer",            "L4"),
+        ("Backend Engineer",             "L3"),
+        ("Backend Engineer",             "L4"),
+        ("ML Engineer",                  "L3"),
+        ("ML Engineer",                  "L4"),
+        ("Data Engineer",                "L3"),
+        ("Data Engineer",                "L4"),
+        ("Platform Engineer",            "L3"),
+        ("Platform Engineer",            "L4"),
+        ("Senior Software Engineer",     "L4"),
+        ("Senior Software Engineer",     "L5"),
+        ("Senior Backend Engineer",      "L4"),
+        ("Senior Backend Engineer",      "L5"),
+        ("Senior ML Engineer",           "L4"),
+        ("Senior ML Engineer",           "L5"),
+        ("Senior Data Engineer",         "L4"),
+        ("Senior Data Engineer",         "L5"),
+        ("Senior Platform Engineer",     "L4"),
+        ("Senior Platform Engineer",     "L5"),
+        ("ML Infrastructure Engineer",   "L4"),
+        ("ML Infrastructure Engineer",   "L5"),
+        ("Site Reliability Engineer",    "L4"),
+        ("Site Reliability Engineer",    "L5"),
+        ("Staff Software Engineer",      "L5"),
+        ("Staff Software Engineer",      "L6"),
+        ("Staff ML Engineer",            "L5"),
+        ("Staff ML Engineer",            "L6"),
+        ("Staff Data Engineer",          "L5"),
+        ("Staff Data Engineer",          "L6"),
+        ("AI Systems Engineer",          "L5"),
+        ("AI Systems Engineer",          "L6"),
+        ("Distributed Systems Engineer", "L5"),
+        ("Distributed Systems Engineer", "L6"),
+        ("Principal Software Engineer",  "L6"),
+        ("Principal Software Engineer",  "L7"),
+        ("Distinguished Engineer",       "L7"),
+    ],
+    "research": [
+        ("Postdoctoral Researcher",       "R3"),
+        ("Research Engineer",             "R3"),
+        ("Research Engineer",             "R4"),
+        ("Research Scientist",            "R3"),
+        ("Research Scientist",            "R4"),
+        ("ML Researcher",                 "R3"),
+        ("ML Researcher",                 "R4"),
+        ("Data Scientist",                "R3"),
+        ("Data Scientist",                "R4"),
+        ("Applied Scientist",             "R3"),
+        ("Applied Scientist",             "R4"),
+        ("Computational Scientist",       "R4"),
+        ("Senior Research Engineer",      "R4"),
+        ("Senior Research Engineer",      "R5"),
+        ("Senior Research Scientist",     "R4"),
+        ("Senior Research Scientist",     "R5"),
+        ("Senior Applied Scientist",      "R4"),
+        ("Senior Applied Scientist",      "R5"),
+        ("Senior Data Scientist",         "R4"),
+        ("Senior Data Scientist",         "R5"),
+        ("AI Safety Researcher",          "R4"),
+        ("AI Safety Researcher",          "R5"),
+        ("Staff Research Scientist",      "R5"),
+        ("Staff Research Scientist",      "R6"),
+        ("Staff Data Scientist",          "R5"),
+        ("Staff Data Scientist",          "R6"),
+        ("Principal Research Scientist",  "R6"),
+        ("Research Fellow",               "R6"),
+    ],
+    "management": [
+        ("Technical Program Manager",        "M1"),
+        ("Product Manager",                  "M1"),
+        ("Engineering Manager",              "M1"),
+        ("Research Lead",                    "M1"),
+        ("Senior Technical Program Manager", "M1"),
+        ("Senior Technical Program Manager", "M2"),
+        ("Senior Product Manager",           "M1"),
+        ("Senior Product Manager",           "M2"),
+        ("Senior Engineering Manager",       "M1"),
+        ("Senior Engineering Manager",       "M2"),
+        ("Group Product Manager",            "M2"),
+        ("Chief of Staff",                   "M2"),
+        ("Director of Engineering",          "M2"),
+        ("Director of Engineering",          "M3"),
+        ("Research Director",                "M2"),
+        ("Research Director",                "M3"),
+        ("Director of Product",              "M2"),
+        ("Director of Product",              "M3"),
+        ("Head of ML Platform",              "M2"),
+        ("Head of AI Research",              "M2"),
+        ("VP of Engineering",                "M3"),
+        ("VP of Research",                   "M3"),
+    ],
+    "product": [
+        ("Product Manager",         "M1"),
+        ("Senior Product Manager",  "M1"),
+        ("Senior Product Manager",  "M2"),
+        ("Group Product Manager",   "M2"),
+        ("Director of Product",     "M2"),
+        ("Director of Product",     "M3"),
+        ("Product Designer",        "L4"),
+        ("Senior Product Designer", "L5"),
+        ("UX Researcher",           "L4"),
+    ],
+    "operations": [
+        ("Technical Program Manager",        "M1"),
+        ("Senior Technical Program Manager", "M1"),
+        ("Program Manager",                  "M1"),
+        ("Operations Manager",               "M1"),
+        ("IT Engineer",                      "L3"),
+        ("Security Engineer",                "L4"),
+        ("Security Engineer",                "L5"),
+        ("Compliance Manager",               "M1"),
+    ],
+}
+
 # Quarter-end: last 10 business days of each quarter
 # We precompute a set of dates at generate() time
 
 
 class SyntheticGenerator:
+    """Seeded generator for canonical entities and raw work-signal events.
+
+    All randomness flows through a single `numpy.random.Generator` and a seeded
+    `Faker` instance so that identical seeds always produce identical datasets.
+    Entity generation and event generation are separate phases; entities are
+    flushed/committed before events so FK constraints are satisfied.
+    """
+
     def __init__(self, seed: int, db_url: str) -> None:
         self.seed = seed
         self.db_url = db_url
@@ -228,10 +355,12 @@ class SyntheticGenerator:
     # ------------------------------------------------------------------
 
     def _date_range(self, start: date, end: date) -> list[date]:
+        """Return every calendar day in [start, end] inclusive."""
         days = (end - start).days + 1
         return [start + timedelta(days=i) for i in range(days)]
 
     def _weekday_multiplier(self, d: date) -> float:
+        """Scale event probability by day of week: 1.0 Mon–Thu, 0.8 Fri, 0.1 Sat/Sun."""
         dow = d.weekday()  # 0=Mon
         if dow < 4:
             return 1.0
@@ -240,6 +369,12 @@ class SyntheticGenerator:
         return 0.1  # Sat, Sun
 
     def _trajectory_multiplier(self, d: date, start: date, end: date, trajectory: str) -> float:
+        """Linear ramp multiplier based on persona trajectory.
+
+        - stable:   always 1.0
+        - rising:   0.3 at start → 1.0 at end
+        - declining: 1.0 at start → 0.3 at end
+        """
         if trajectory == "stable":
             return 1.0
         total = max((end - start).days, 1)
@@ -278,6 +413,7 @@ class SyntheticGenerator:
         return datetime(d.year, d.month, d.day, hour, minute)
 
     def _is_after_hire(self, d: date, hire_date: date) -> bool:
+        """Return True if d is on or after the employee's hire_date."""
         return d >= hire_date
 
     # ------------------------------------------------------------------
@@ -285,6 +421,7 @@ class SyntheticGenerator:
     # ------------------------------------------------------------------
 
     def _gen_orgs(self, session: Session, n: int) -> list[uuid.UUID]:
+        """Insert up to n orgs from the fixed _ORG_NAMES list; return their IDs."""
         ids = []
         for i in range(min(n, len(_ORG_NAMES))):
             org_id = uuid.uuid4()
@@ -293,6 +430,7 @@ class SyntheticGenerator:
         return ids
 
     def _gen_teams(self, session: Session, org_ids: list[uuid.UUID], n: int) -> list[uuid.UUID]:
+        """Insert n teams randomly distributed across orgs; return their IDs."""
         ids = []
         for i in range(n):
             team_id = uuid.uuid4()
@@ -308,6 +446,7 @@ class SyntheticGenerator:
         return ids
 
     def _gen_skills(self, session: Session, n: int) -> list[uuid.UUID]:
+        """Sample n skills without replacement from the predefined skill pool; return their IDs."""
         ids = []
         skill_pool: list[tuple[str, str]] = []
         for cat, names in _SKILL_NAMES_BY_CATEGORY.items():
@@ -323,6 +462,7 @@ class SyntheticGenerator:
         return ids
 
     def _gen_repos(self, session: Session, team_ids: list[uuid.UUID], n: int) -> list[uuid.UUID]:
+        """Insert n repos (10 % flagged as monorepos) owned by random teams; return their IDs."""
         ids = []
         for i in range(n):
             repo_id = uuid.uuid4()
@@ -363,7 +503,6 @@ class SyntheticGenerator:
 
             org_id = org_ids[int(self.rng.integers(0, len(org_ids)))]
             team_id = team_ids[int(self.rng.integers(0, len(team_ids)))]
-            job_level = persona.job_levels[int(self.rng.integers(0, len(persona.job_levels)))]
 
             # New hires start after generation start; most are already hired
             if self.rng.random() < 0.1:
@@ -373,6 +512,13 @@ class SyntheticGenerator:
                 days_before = int(self.rng.integers(30, 1460))
                 hire_date = start_date - timedelta(days=days_before)
 
+            # Pick (title, level) jointly, filtered to this persona's allowed levels
+            all_pairs = _ROLE_TITLE_LEVELS_BY_FAMILY.get(
+                persona.role_family, _ROLE_TITLE_LEVELS_BY_FAMILY["engineering"]
+            )
+            eligible = [p for p in all_pairs if p[1] in persona.job_levels] or all_pairs
+            chosen_pair = eligible[int(self.rng.integers(0, len(eligible)))]
+            role_title, job_level = chosen_pair
             ref_prefix = f"{run_prefix}-" if run_prefix else ""
             session.add(Employee(
                 employee_id=emp_id,
@@ -380,7 +526,7 @@ class SyntheticGenerator:
                 full_name=self.fake.name(),
                 preferred_name=None,
                 email=f"{ref_prefix}emp{i+1}@wsip-synthetic.internal",
-                role_title=self.fake.job(),
+                role_title=role_title,
                 role_family=persona.role_family,
                 job_level=job_level,
                 employment_status="active",
@@ -444,6 +590,7 @@ class SyntheticGenerator:
     def _gen_employee_skills(
         self, session: Session, employee_ids: list[uuid.UUID], skill_ids: list[uuid.UUID]
     ) -> None:
+        """Assign 2–8 randomly sampled skills to each employee with proficiency and confidence scores."""
         for emp_id in employee_ids:
             n_skills = int(self.rng.integers(3, 12))
             chosen = self.rng.choice(len(skill_ids), size=min(n_skills, len(skill_ids)), replace=False)
@@ -464,6 +611,7 @@ class SyntheticGenerator:
         project_ids: list[uuid.UUID],
         start_date: date,
     ) -> None:
+        """Assign each employee to 1–3 projects with allocation_pct values that sum to 1.0."""
         for emp_id in employee_ids:
             n_proj = int(self.rng.integers(1, 4))
             chosen = self.rng.choice(len(project_ids), size=min(n_proj, len(project_ids)), replace=False)
@@ -483,6 +631,7 @@ class SyntheticGenerator:
         project_ids: list[uuid.UUID],
         skill_ids: list[uuid.UUID],
     ) -> None:
+        """Attach 2–5 randomly weighted skill requirements to each project."""
         for proj_id in project_ids:
             n_req = int(self.rng.integers(2, 6))
             chosen = self.rng.choice(len(skill_ids), size=min(n_req, len(skill_ids)), replace=False)
@@ -501,6 +650,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         snapshot_date: date,
     ) -> None:
+        """Write one EmployeeSnapshot per employee capturing their profile at snapshot_date."""
         for emp_id, hire_date in zip(employee_ids, hire_dates):
             emp = session.get(Employee, emp_id)
             if emp is None:
@@ -525,6 +675,7 @@ class SyntheticGenerator:
         skill_ids: list[uuid.UUID],
         inferred_at_date: date,
     ) -> None:
+        """Generate 2–7 resume/LinkedIn/GitHub skill inference records per employee."""
         inferred_ts = datetime(inferred_at_date.year, inferred_at_date.month, inferred_at_date.day, 0, 0, 0)
         for emp_id in employee_ids:
             n_inferred = int(self.rng.integers(2, 8))
@@ -553,6 +704,11 @@ class SyntheticGenerator:
         weekday_mult: float,
         spike_mult: float = 1.0,
     ) -> float:
+        """Compute the effective Poisson lambda for one employee on one day.
+
+        Returns 0.0 before hire_date.  Otherwise:
+            effective_lambda = base_lambda × weekday_mult × trajectory_mult × spike_mult
+        """
         if not self._is_after_hire(d, hire_date):
             return 0.0
         traj = self._trajectory_multiplier(d, start_date, end_date, trajectory)
@@ -570,6 +726,7 @@ class SyntheticGenerator:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> None:
+        """Poisson-sample git commit events per employee per day; 2× spike on quarter-end dates."""
         _start = all_dates[0] if start_date is None else start_date
         _end = all_dates[-1] if end_date is None else end_date
         rows: list[dict[str, Any]] = []
@@ -607,6 +764,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Poisson-sample pull request open events per employee per day."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -650,6 +808,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Poisson-sample code review events; each reviewer is assigned a random peer as pr_author."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -684,6 +843,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Poisson-sample experiment run events; primarily fired by research-heavy personas."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -721,6 +881,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Poisson-sample research artifact creation events (papers, reports, datasets, etc.)."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -754,6 +915,7 @@ class SyntheticGenerator:
         all_dates: list[date],
         spike_dates: set[date],
     ) -> None:
+        """Poisson-sample document events; 1.2× spike multiplier on quarter-end dates."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -787,6 +949,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Poisson-sample task open/close events; each event is linked to a random project."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -821,6 +984,7 @@ class SyntheticGenerator:
         all_dates: list[date],
         spike_dates: set[date],
     ) -> None:
+        """Poisson-sample meeting events; duration is drawn from a normal distribution around persona mean."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -856,6 +1020,7 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Poisson-sample chat metadata events; after_hours is set when the sampled hour is outside 07:00–20:00."""
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         for emp_id, persona_name, hire_date in zip(employee_ids, personas, hire_dates):
@@ -891,6 +1056,11 @@ class SyntheticGenerator:
         hire_dates: list[date],
         all_dates: list[date],
     ) -> None:
+        """Sample training completion events once per month per employee based on persona training_lambda.
+
+        training_lambda is a monthly probability (not a daily Poisson rate).  50 % of events
+        are linked to a random skill_id; the rest have skill_id = None.
+        """
         _start, _end = all_dates[0], all_dates[-1]
         rows: list[dict[str, Any]] = []
         # Training is sparse — check once per month per employee

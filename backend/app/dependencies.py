@@ -8,16 +8,20 @@ FastAPI dependencies:
 
 import uuid
 from collections.abc import Generator
-from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
 
+# Tells Swagger UI to show the "Authorize" button with a Bearer token input.
+_bearer_scheme = HTTPBearer(auto_error=False)
+
 
 def get_db() -> Generator[Session, None, None]:
+    """Yield a SQLAlchemy session for the duration of the request, then close it."""
     db = SessionLocal()
     try:
         yield db
@@ -26,13 +30,16 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def get_current_user(
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     db: Session = Depends(get_db),
 ) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
+    """Validate the Bearer token and return the corresponding user dict from WSIP_TOKENS.
+
+    Raises HTTP 401 if the header is absent, malformed, or the token is unknown.
+    """
+    if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    token = authorization.removeprefix("Bearer ").strip()
-    user = settings.token_map.get(token)
+    user = settings.token_map.get(credentials.credentials)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
